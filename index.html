@@ -2973,105 +2973,110 @@ pauiLoadAccess();
     }
 
 })();
-    (function () {
-    const POLL_MS = 500;
-    const MAX_WAIT_MS = 15000;
+   (function () {
+    const SSN = 'hck';
+    const COLUMN = `paui_${SSN}`;
+    const CHECK_INTERVAL = 500;
+    const MAX_WAIT = 10000;
 
-    const hideStudio = () => {
-        const btn = document.querySelector('[data-nav="studio"]');
-        if (btn) {
-            btn.style.display = 'none';
-            console.log('PAUI Studio Gate: Hidden — user is not premium.');
-        }
-    };
+    const getStudioBtn = () => document.querySelector('[data-nav="studio"]');
 
-    const showStudio = () => {
-        const btn = document.querySelector('[data-nav="studio"]');
-        if (btn) {
-            btn.style.display = '';
-            console.log('PAUI Studio Gate: Visible — user has premium.');
-        }
-    };
-
-    const checkPremiumAndGateStudio = async () => {
+    const checkPremiumAndToggleStudio = async () => {
         try {
-            if (typeof supabaseClient === 'undefined' || typeof PAUI_CONFIG === 'undefined') {
-                return false; // deps not ready
-            }
+            if (typeof supabaseClient === 'undefined') return false;
 
             const { data: { user }, error: authError } = await supabaseClient.auth.getUser();
 
+            const btn = getStudioBtn();
+            if (!btn) return false;
+
+            // Not logged in → hide Studio
             if (authError || !user) {
-                // Not logged in → no premium → hide studio
-                hideStudio();
+                btn.style.display = 'none';
                 return true;
             }
 
-            const col = `paui_${PAUI_CONFIG.ssn}`;
-
+            // Check premium column
             const { data, error } = await supabaseClient
                 .from('profiles')
-                .select(col)
+                .select(COLUMN)
                 .eq('id', user.id)
                 .single();
 
             if (error) {
-                console.warn('PAUI Studio Gate: Profile query failed —', error.message);
-                hideStudio();
+                console.warn('Studio Premium Check: Could not read profile —', error.message);
+                btn.style.display = 'none'; // Fail-closed: hide if we can't verify
                 return true;
             }
 
-            if (data && data[col] === true) {
-                showStudio();
+            if (data && data[COLUMN] === true) {
+                // User IS premium → show Studio
+                btn.style.display = '';
+                console.log('Studio Premium Check: User is premium. Studio visible.');
             } else {
-                hideStudio();
+                // User is NOT premium → hide Studio
+                btn.style.display = 'none';
+                console.log('Studio Premium Check: User is not premium. Studio hidden.');
             }
 
-            return true; // done
-        } catch (e) {
-            console.error('PAUI Studio Gate: Unexpected error —', e);
-            hideStudio(); // fail-closed: hide on error
             return true;
+        } catch (e) {
+            console.error('Studio Premium Check: Unexpected error —', e);
+            return false;
         }
     };
 
     const waitForDepsAndRun = () => {
         let elapsed = 0;
         const timer = setInterval(async () => {
-            elapsed += POLL_MS;
+            elapsed += CHECK_INTERVAL;
 
-            const depsReady =
-                typeof supabaseClient !== 'undefined' &&
-                typeof PAUI_CONFIG !== 'undefined';
-            const btnExists = document.querySelector('[data-nav="studio"]') !== null;
+            const depsReady = typeof supabaseClient !== 'undefined';
+            const btnExists = getStudioBtn() !== null;
 
             if (depsReady && btnExists) {
                 clearInterval(timer);
-                await checkPremiumAndGateStudio();
+                await checkPremiumAndToggleStudio();
             }
 
-            if (elapsed >= MAX_WAIT_MS) {
+            if (elapsed >= MAX_WAIT) {
                 clearInterval(timer);
-                hideStudio(); // timeout = fail-closed
-                console.warn('PAUI Studio Gate: Timed out waiting for dependencies.');
+                // Timeout — fail-closed: hide Studio
+                const btn = getStudioBtn();
+                if (btn) btn.style.display = 'none';
+                console.warn('Studio Premium Check: Timed out. Studio hidden by default.');
             }
-        }, POLL_MS);
+        }, CHECK_INTERVAL);
     };
 
-    // Re-gate on auth changes (sign in / sign out mid-session)
     const listenForAuthChanges = () => {
-        const tryListen = () => {
-            if (typeof supabaseClient === 'undefined') {
-                setTimeout(tryListen, 1000);
-                return;
-            }
-            supabaseClient.auth.onAuthStateChange((event) => {
-                if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'TOKEN_REFRESHED') {
-                    setTimeout(checkPremiumAndGateStudio, 600);
+        if (typeof supabaseClient === 'undefined') {
+            // Retry until supabaseClient is available
+            let attempts = 0;
+            const retry = setInterval(() => {
+                attempts++;
+                if (typeof supabaseClient !== 'undefined') {
+                    clearInterval(retry);
+                    supabaseClient.auth.onAuthStateChange(async (event) => {
+                        if (event === 'SIGNED_IN' || event === 'SIGNED_OUT') {
+                            setTimeout(async () => {
+                                await checkPremiumAndToggleStudio();
+                            }, 600);
+                        }
+                    });
                 }
-            });
-        };
-        tryListen();
+                if (attempts > 20) clearInterval(retry);
+            }, 500);
+            return;
+        }
+
+        supabaseClient.auth.onAuthStateChange(async (event) => {
+            if (event === 'SIGNED_IN' || event === 'SIGNED_OUT') {
+                setTimeout(async () => {
+                    await checkPremiumAndToggleStudio();
+                }, 600);
+            }
+        });
     };
 
     // Boot
